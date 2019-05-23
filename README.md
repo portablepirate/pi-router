@@ -36,8 +36,10 @@ to the current versions, and then run `sudo raspi-config` to tweak your Pi
 to the specifications you wish.
 
 Then lastly, you just run
-> `wget https://raw.github.com/portablepirate/pi-router/pi-router`
-and set it to executable with `chmod +x pi-router`
+> `wget https://raw.githubusercontent.com/portablepirate/pi-router/master/pi-router`
+
+and set it to executable with `chmod +x pi-router`. Naturally, this must be run as
+root or with `sudo`
 
 ## Usage
 `pi-router --wan interface --lan --interface [options]`

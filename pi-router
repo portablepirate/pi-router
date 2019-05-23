@@ -5,12 +5,17 @@ import subprocess
 
 VERSION = '0.1'
 
+#TODO: Add checking to make sure we are being run as root
 
 def setStaticIp(lanIface,routerIp,subnetMask,noWifi):
     #TODO: actually make this respect the submitted subnet mask
-    #TODO: this needs to check to see if there is already a configuration
-    # for the said interface
-    f = open('/etc/dhcpcd.conf','a')
+    
+    incFileContents = ''
+    incFile = open('/etc/dhcpcd.conf.inc','r')
+    if incFile.mode == 'r':
+        incFileContents = incFile.read()
+    f = open('/etc/dhcpcd.conf','w+')
+    f.write(incFileContents)
     f.write("interface "+lanIface+"\n")
     f.write("\tstatic ip_address="+routerIp+"/24\n")
     if not noWifi:
@@ -67,16 +72,21 @@ def configureHostapd(lanIface,essid,channel,key):
     return 0
 
 def configureRouting(wanIface):
-    #TODO: handle parsing of /etc/sysctl.conf for the line
-    # net.ipv4.ip_forward=1
+    # Enable IPv4 forwarding
+    subprocess.call(['sysctl','-w','net.ipv4.ip_forward=1'])
+    subprocess.call(['sysctl','-p'])
+
+    # Build routing table
+    # TODO: FIX THIS!!!! This passes user input from a command line into
+    # another shell
     cmdString = 'iptables -t nat -A POSTROUTING -o '+wanIface+' -j MASQUERADE'
     print('Calling '+cmdString)
     subprocess.call(cmdString,shell=True)
     subprocess.call('iptables-save > /etc/iptables.ipv4.nat',shell=True)
 
-    #TODO: handle parcing /etc/rc.local to add
-    # iptables-restore < /etc/iptables.ipv4.nat
-    # before the exit 0 line
+    # Add this to the end of the rc.local startup script
+    # TODO: Needs to check to make sure it only adds it if it's not there
+    subprocess.call("sed -i '/exit 0/iiptables-restore < /etc/iptables.ipv4.nat' /etc/rc.local",shell=True)
     return 0
 
 parser = argparse.ArgumentParser(prog='pi-router',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -100,6 +110,8 @@ args = parser.parse_args()
 if args.new_install:
     print("Installing packages...\n")
     installPackages(args.no_wifi)
+    print("Moving DHCP client file...\n")
+    subprocess.call(['mv','/etc/dhcpcd.conf','/etc/dhcpcd.conf.inc'])
 
 print("Setting up static IP on LAN...\n")
 setStaticIp(args.lan,args.router_ip,args.subnet_mask,args.no_wifi)
