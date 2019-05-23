@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+
+import argparse
+import subprocess
+
+VERSION = '0.1'
+
+
+def setStaticIp(lanIface,routerIp,subnetMask,noWifi):
+    #TODO: actually make this respect the submitted subnet mask
+    #TODO: this needs to check to see if there is already a configuration
+    # for the said interface
+    f = open('/etc/dhcpcd.conf','a')
+    f.write("interface "+lanIface+"\n")
+    f.write("\tstatic ip_address="+routerIp+"/24\n")
+    if not noWifi:
+        f.write("\tnohook wpa_supplicant\n")
+    f.close()
+
+    subprocess.call(['systemctl','restart','dhcpcd'])
+    return 0
+
+def installPackages(noWifi=False):
+    if not noWifi:
+        subprocess.call(['apt','install','dnsmasq','hostapd'])
+    else:
+        subprocess.call(['apt','install','dnsmasq'])
+
+    return 0
+
+def configureDhcp(lanIface,dhcpStart,dhcpEnd,subnetMask,dnsList):
+    subprocess.call(['mv','/etc/dnsmasq.conf','/etc/dnsmasq.conf.bak'])
+    f = open('/etc/dnsmasq.conf','w+')
+    f.write("interface="+lanIface+"\n")
+    f.write("dhcp-range="+dhcpStart+","+dhcpEnd+","+subnetMask+",8h\n")
+    f.write("dhcp-option=6,"+dnsList+"\n")
+    f.close()
+
+    subprocess.call(['systemctl','restart','dnsmasq'])
+    return 0
+
+def configureHostapd(lanIface,essid,channel,key):
+    f = open('/etc/hostapd/hostapd.conf','w+')
+    f.write("interface="+lanIface+"\n")
+    f.write("driver=nl80211\n")
+    f.write("ssid="+essid+"\n")
+    f.write("hw_mode=g\n")
+    f.write("channel="+channel+"\n")
+    f.write("wmm_enabled=0\n")
+    f.write("macaddr_acl=0\n")
+    f.write("auth_algs=1\n")
+    f.write("ignore_broadcast_ssid=0\n")
+    f.write("wpa=2\n")
+    f.write("wpa_passphrase="+key+"\n")
+    f.write("wpa_key_mgmt=WPA-PSK\n")
+    f.write("wpa_pairwise=TKIP\n")
+    f.write("rsn_pairwise=CCMP\n")
+    f.close()
+
+    f = open('/etc/default/hostapd','a')
+    f.write("DAEMON_CONF=\"/etc/hostapd/hostapd.conf\"\n")
+    f.close()
+
+    subprocess.call(['systemctl','unmask','hostapd'])
+    subprocess.call(['systemctl','enable','hostapd'])
+    subprocess.call(['systemctl','start','hostapd'])
+    return 0
+
+def configureRouting(wanIface):
+    #TODO: handle parsing of /etc/sysctl.conf for the line
+    # net.ipv4.ip_forward=1
+    cmdString = 'iptables -t nat -A POSTROUTING -o '+wanIface+' -j MASQUERADE'
+    print('Calling '+cmdString)
+    subprocess.call(cmdString,shell=True)
+    subprocess.call('iptables-save > /etc/iptables.ipv4.nat',shell=True)
+
+    #TODO: handle parcing /etc/rc.local to add
+    # iptables-restore < /etc/iptables.ipv4.nat
+    # before the exit 0 line
+    return 0
+
+parser = argparse.ArgumentParser(prog='pi-router',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument('--version',help='version information',action='version',version='%(prog)s '+VERSION)
+parser.add_argument('-w','--wan',nargs=1,help='Specifies the WAN interface',default='eth0',metavar='INTERFACE')
+parser.add_argument('-l','--lan',nargs=1,help='Specifies the LAN interface',default='wlan0',metavar='INTERFACE')
+parser.add_argument('-ds','--dhcp-start',nargs=1,help='Starting DHCP pool address',default='10.13.37.50',metavar='IP_ADDRESS')
+parser.add_argument('-de','--dhcp-end',nargs=1,help='Ending DHCP pool address',default='10.13.37.150',metavar='IP_ADDRESS')
+parser.add_argument('-ri','--router-ip',nargs=1,help='IP to use for router on LAN side',default='10.13.37.1',metavar='IP_ADDRESS')
+parser.add_argument('-sub','--subnet-mask',nargs=1,help='Subnet mask to use for LAN',default='255.255.255.0',metavar='SUBNET_MASK')
+parser.add_argument('-le','--lan-essid',nargs=1,help='ESSID to use for access point on LAN',default='pi-router',metavar='NAME')
+parser.add_argument('-lk','--lan-wpa-psk',nargs=1,help='WPA-PSK to use for LAN',default='portablepirate',metavar='KEY')
+parser.add_argument('-lc','--lan-channel',nargs=1,help='Channel to use for access point on LAN',default='4',metavar='#')
+parser.add_argument('-d','--dns',nargs=1,help='Comma seperated DNS servers to use for DHCP server',default='8.8.8.8,8.8.4.4,10.13.37.1',metavar='LIST')
+parser.add_argument('--open-lan-wifi',action='store_true',help='Disables WPA security on LAN access point')
+parser.add_argument('--no-wifi',action='store_true',help='Disables hostapd functionality')
+parser.add_argument('--new-install',action='store_true',help='Performs intial setup of the pi')
+
+args = parser.parse_args()
+
+if args.new_install:
+    print("Installing packages...\n")
+    installPackages(args.no_wifi)
+
+print("Setting up static IP on LAN...\n")
+setStaticIp(args.lan,args.router_ip,args.subnet_mask,args.no_wifi)
+print("Configuring DHCP server...\n")
+configureDhcp(args.lan,args.dhcp_start,args.dhcp_end,args.subnet_mask,args.dns)
+
+if not args.no_wifi:
+    print("Configuring hostapd...\n")
+    configureHostapd(args.lan,args.lan_essid,args.lan_channel,args.lan_wpa_psk)
+
+print("Enabling NAT...\n")
+configureRouting(args.wan)
+print("DONE!\n")
