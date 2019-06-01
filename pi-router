@@ -2,26 +2,30 @@
 
 import argparse
 import subprocess
+import os
 
 VERSION = '0.1'
 
-#TODO: Add checking to make sure we are being run as root
-
 def setStaticIp(lanIface,routerIp,subnetMask,noWifi):
-    #TODO: actually make this respect the submitted subnet mask
-    
+    # Convert subnet mask (ie 255.255.255.0) to cidr (ie /24)
+    cidr = sum(bin(int(x)).count('1') for x in subnetMask.split('.'))
+
     incFileContents = ''
+    
+    # see if we have a config inc file to prepend
     incFile = open('/etc/dhcpcd.conf.inc','r')
     if incFile.mode == 'r':
         incFileContents = incFile.read()
+
     f = open('/etc/dhcpcd.conf','w+')
     f.write(incFileContents)
     f.write("interface "+lanIface+"\n")
-    f.write("\tstatic ip_address="+routerIp+"/24\n")
+    f.write("\tstatic ip_address="+routerIp+"/"+cidr+"\n")
     if not noWifi:
         f.write("\tnohook wpa_supplicant\n")
     f.close()
 
+    # restart dhcpcd after our changes
     subprocess.call(['systemctl','restart','dhcpcd'])
     return 0
 
@@ -34,7 +38,9 @@ def installPackages(noWifi=False):
     return 0
 
 def configureDhcp(lanIface,dhcpStart,dhcpEnd,subnetMask,dnsList):
+    # backup existing config
     subprocess.call(['mv','/etc/dnsmasq.conf','/etc/dnsmasq.conf.bak'])
+
     f = open('/etc/dnsmasq.conf','w+')
     f.write("interface="+lanIface+"\n")
     f.write("dhcp-range="+dhcpStart+","+dhcpEnd+","+subnetMask+",8h\n")
@@ -44,7 +50,7 @@ def configureDhcp(lanIface,dhcpStart,dhcpEnd,subnetMask,dnsList):
     subprocess.call(['systemctl','restart','dnsmasq'])
     return 0
 
-def configureHostapd(lanIface,essid,channel,key):
+def configureHostapd(lanIface,essid,channel,key,newInstall=False):
     f = open('/etc/hostapd/hostapd.conf','w+')
     f.write("interface="+lanIface+"\n")
     f.write("driver=nl80211\n")
@@ -62,31 +68,34 @@ def configureHostapd(lanIface,essid,channel,key):
     f.write("rsn_pairwise=CCMP\n")
     f.close()
 
-    f = open('/etc/default/hostapd','a')
-    f.write("DAEMON_CONF=\"/etc/hostapd/hostapd.conf\"\n")
-    f.close()
+    if newInstall:
+        f = open('/etc/default/hostapd','a')
+        f.write("DAEMON_CONF=\"/etc/hostapd/hostapd.conf\"\n")
+        f.close()
 
     subprocess.call(['systemctl','unmask','hostapd'])
     subprocess.call(['systemctl','enable','hostapd'])
     subprocess.call(['systemctl','start','hostapd'])
     return 0
 
-def configureRouting(wanIface):
+def configureRouting(wanIface,newInstall=False):
     # Enable IPv4 forwarding
-    subprocess.call(['sysctl','-w','net.ipv4.ip_forward=1'])
-    subprocess.call(['sysctl','-p'])
+    if newInstall:
+        subprocess.call(['sysctl','-w','net.ipv4.ip_forward=1'])
+        subprocess.call(['sysctl','-p'])
 
     # Build routing table
-    # TODO: FIX THIS!!!! This passes user input from a command line into
-    # another shell
+    # NOTE: I'm on the fence on fixing this. I mean, ulitimately this
+    # script has to be run as root so sanitizing is not that big of a
+    # deal I guess(?)
     cmdString = 'iptables -t nat -A POSTROUTING -o '+wanIface+' -j MASQUERADE'
     print('Calling '+cmdString)
     subprocess.call(cmdString,shell=True)
     subprocess.call('iptables-save > /etc/iptables.ipv4.nat',shell=True)
 
     # Add this to the end of the rc.local startup script
-    # TODO: Needs to check to make sure it only adds it if it's not there
-    subprocess.call("sed -i '/exit 0/iiptables-restore < /etc/iptables.ipv4.nat' /etc/rc.local",shell=True)
+    if newInstall:
+        subprocess.call("sed -i '/exit 0/iiptables-restore < /etc/iptables.ipv4.nat' /etc/rc.local",shell=True)
     return 0
 
 parser = argparse.ArgumentParser(prog='pi-router',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -107,6 +116,9 @@ parser.add_argument('--new-install',action='store_true',help='Performs intial se
 
 args = parser.parse_args()
 
+if os.geteuid() != 0:
+    exit('You must be root in order to run this script. Exiting')
+
 if args.new_install:
     print("Installing packages...\n")
     installPackages(args.no_wifi)
@@ -120,8 +132,8 @@ configureDhcp(args.lan,args.dhcp_start,args.dhcp_end,args.subnet_mask,args.dns)
 
 if not args.no_wifi:
     print("Configuring hostapd...\n")
-    configureHostapd(args.lan,args.lan_essid,args.lan_channel,args.lan_wpa_psk)
+    configureHostapd(args.lan,args.lan_essid,args.lan_channel,args.lan_wpa_psk,args.new_install)
 
 print("Enabling NAT...\n")
-configureRouting(args.wan)
+configureRouting(args.wan,args.new_install)
 print("DONE!\n")
